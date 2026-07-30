@@ -1,0 +1,6 @@
+storage/*
+!storage/.gitkeep
+*.o
+nervfs_server
+nervfs_client
+node_modules/
