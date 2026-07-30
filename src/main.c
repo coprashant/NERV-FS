@@ -31,8 +31,8 @@ int main(int argc, char *argv[])
 
     log_info("listener ready");
 
-    /* phase 1 blocking accept loop, will be replaced by select loop in phase 2 */
-    net_run_echo_loop(listen_fd);
+    /* phase 2 select loop, handles the listener and many clients at once */
+    net_run_select_loop(listen_fd);
 
     close(listen_fd);
     return 0;

@@ -4,3 +4,6 @@ storage/*
 nervfs_server
 nervfs_client
 node_modules/
+
+
+documentation.md

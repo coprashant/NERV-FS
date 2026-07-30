@@ -2,6 +2,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
@@ -81,5 +82,102 @@ void net_run_echo_loop(int listen_fd)
 
         close(client_fd);
         log_info("client disconnected");
+    }
+}
+
+/* handles one readable client, returns 0 if still connected 1 if it should be closed */
+static int handle_client_readable(int client_fd)
+{
+    char buffer[NERVFS_BUFFER_SIZE];
+    ssize_t n = read(client_fd, buffer, sizeof(buffer));
+
+    if (n == 0) {
+        log_info("client disconnected");
+        return 1;
+    }
+
+    if (n < 0) {
+        log_error("read from client failed");
+        return 1;
+    }
+
+    ssize_t written = write(client_fd, buffer, (size_t)n);
+    if (written < 0) {
+        log_error("write to client failed");
+        return 1;
+    }
+
+    return 0;
+}
+
+void net_run_select_loop(int listen_fd)
+{
+    int client_fds[NERVFS_MAX_CLIENTS];
+    for (int i = 0; i < NERVFS_MAX_CLIENTS; i++) {
+        client_fds[i] = -1;
+    }
+
+    log_info("phase 2 select loop watching listener and clients");
+
+    while (1) {
+        fd_set read_set;
+        FD_ZERO(&read_set);
+        FD_SET(listen_fd, &read_set);
+        int max_fd = listen_fd;
+
+        for (int i = 0; i < NERVFS_MAX_CLIENTS; i++) {
+            if (client_fds[i] != -1) {
+                FD_SET(client_fds[i], &read_set);
+                if (client_fds[i] > max_fd) {
+                    max_fd = client_fds[i];
+                }
+            }
+        }
+
+        int ready = select(max_fd + 1, &read_set, NULL, NULL, NULL);
+        if (ready < 0) {
+            log_error("select failed");
+            continue;
+        }
+
+        if (FD_ISSET(listen_fd, &read_set)) {
+            struct sockaddr_in client_addr;
+            socklen_t client_len = sizeof(client_addr);
+            int new_fd = accept(listen_fd, (struct sockaddr *)&client_addr, &client_len);
+
+            if (new_fd < 0) {
+                log_error("accept failed");
+            } else {
+                int slot = -1;
+                for (int i = 0; i < NERVFS_MAX_CLIENTS; i++) {
+                    if (client_fds[i] == -1) {
+                        slot = i;
+                        break;
+                    }
+                }
+
+                if (slot == -1) {
+                    log_info("client rejected, max clients reached");
+                    close(new_fd);
+                } else {
+                    client_fds[slot] = new_fd;
+                    char ip_str[INET_ADDRSTRLEN];
+                    inet_ntop(AF_INET, &client_addr.sin_addr, ip_str, sizeof(ip_str));
+                    char msg[128];
+                    snprintf(msg, sizeof(msg), "client connected from %s", ip_str);
+                    log_info(msg);
+                }
+            }
+        }
+
+        for (int i = 0; i < NERVFS_MAX_CLIENTS; i++) {
+            int fd = client_fds[i];
+            if (fd != -1 && FD_ISSET(fd, &read_set)) {
+                if (handle_client_readable(fd)) {
+                    close(fd);
+                    client_fds[i] = -1;
+                }
+            }
+        }
     }
 }
