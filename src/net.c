@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/socket.h>
@@ -9,6 +10,7 @@
 #include "net.h"
 #include "server.h"
 #include "logging.h"
+#include "protocol.h"
 
 int net_create_listener(int port)
 {
@@ -88,23 +90,46 @@ void net_run_echo_loop(int listen_fd)
 /* handles one readable client, returns 0 if still connected 1 if it should be closed */
 static int handle_client_readable(int client_fd)
 {
-    char buffer[NERVFS_BUFFER_SIZE];
-    ssize_t n = read(client_fd, buffer, sizeof(buffer));
+    unsigned char header_buf[NERVFS_HEADER_SIZE];
+    ssize_t got = recv_full(client_fd, header_buf, NERVFS_HEADER_SIZE);
 
-    if (n == 0) {
+    if (got == 0) {
         log_info("client disconnected");
         return 1;
     }
 
-    if (n < 0) {
-        log_error("read from client failed");
+    if (got < 0 || (size_t)got < NERVFS_HEADER_SIZE) {
+        log_error("failed to read full header");
         return 1;
     }
 
-    ssize_t written = write(client_fd, buffer, (size_t)n);
-    if (written < 0) {
-        log_error("write to client failed");
+    nervfs_header_t header;
+    if (parse_header(header_buf, &header) < 0) {
+        log_info("bad magic or version rejecting client");
         return 1;
+    }
+
+    char msg[128];
+    snprintf(msg, sizeof(msg), "received opcode %s payload len %u",
+             opcode_name(header.opcode), header.payload_len);
+    log_info(msg);
+
+    if (header.payload_len > 0) {
+        unsigned char *payload = malloc(header.payload_len);
+        if (payload == NULL) {
+            log_error("payload allocation failed");
+            return 1;
+        }
+
+        ssize_t pgot = recv_full(client_fd, payload, header.payload_len);
+        if (pgot < 0 || (uint32_t)pgot < header.payload_len) {
+            log_error("failed to read full payload");
+            free(payload);
+            return 1;
+        }
+
+        free(payload);
+        /* opcode dispatch to real handlers gets added in phase 5 */
     }
 
     return 0;

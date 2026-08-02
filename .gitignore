@@ -6,4 +6,10 @@ nervfs_client
 node_modules/
 
 
-documentation.md
+docs/documentation.md
+
+frontend/dist
+frontend/node_modules
+frontend/.env
+frontend/.env.local
+frontend/package-lock.json

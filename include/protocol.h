@@ -2,9 +2,11 @@
 #define NERVFS_PROTOCOL_H
 
 #include <stdint.h>
+#include <unistd.h>
 
 #define NERVFS_MAGIC 0xAE
 #define NERVFS_VERSION 1
+#define NERVFS_HEADER_SIZE 16
 
 /* fixed 16 byte header for every message, see documentation section 4 */
 #pragma pack(push, 1)
@@ -35,6 +37,19 @@ typedef struct {
 #define ERR_INTERNAL      500
 #define ERR_BAD_REQUEST   400
 
-/* phase 3 will add parsing and serialization functions here */
+/* loops on read until len bytes collected connection closes or error */
+ssize_t recv_full(int fd, void *buf, size_t len);
+
+/* loops on write until len bytes sent or error */
+ssize_t send_full(int fd, const void *buf, size_t len);
+
+/* fills out from 16 raw header bytes, returns 0 on success negative on bad magic or version */
+int parse_header(const unsigned char *buf, nervfs_header_t *out);
+
+/* writes 16 raw header bytes from in */
+void serialize_header(const nervfs_header_t *in, unsigned char *buf);
+
+/* returns a short human readable name for an opcode */
+const char *opcode_name(uint16_t opcode);
 
 #endif

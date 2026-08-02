@@ -4,7 +4,7 @@ SRC = src/main.c src/net.c src/threadpool.c src/protocol.c src/fileops.c src/han
 OBJ = $(SRC:.c=.o)
 TARGET = nervfs_server
 
-CLIENT_SRC = client/nervfs_client.c
+CLIENT_SRC = client/nervfs_client.c src/protocol.c
 CLIENT_TARGET = nervfs_client
 
 all: $(TARGET)
