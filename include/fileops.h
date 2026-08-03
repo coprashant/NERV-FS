@@ -26,6 +26,15 @@ int fileops_write_file(const char *path, const unsigned char *data, uint64_t siz
 /* reads path fully into a malloc buffer, caller must free it, returns 0 or negative */
 int fileops_read_file(const char *path, unsigned char **out_data, uint64_t *out_size);
 
+/* opens path and mmaps it read only, returns 0 on success */
+/* returns negative one if the file could not be opened or stat failed */
+/* returns negative two if mmap itself failed */
+/* a zero length file yields out_map NULL and out_size zero, caller must still close out_fd */
+int fileops_open_for_mmap_read(const char *path, void **out_map, uint64_t *out_size, int *out_fd);
+
+/* unmaps a region from fileops_open_for_mmap_read and closes its fd */
+void fileops_close_mmap(void *map, uint64_t size, int fd);
+
 /* removes path, returns 0 or negative */
 int fileops_delete_file(const char *path);
 

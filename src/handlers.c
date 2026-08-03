@@ -151,30 +151,42 @@ static void handle_download(int client_fd, const unsigned char *payload, uint32_
         return;
     }
 
-    unsigned char *data = NULL;
+    void *mapped = NULL;
     uint64_t size = 0;
-    if (fileops_read_file(path, &data, &size) < 0) {
+    int file_fd = -1;
+
+    int rc = fileops_open_for_mmap_read(path, &mapped, &size, &file_fd);
+    if (rc == -1) {
         send_error(client_fd, ERR_NOT_FOUND, "file not found");
         return;
     }
-
-    uint32_t resp_payload_len = (uint32_t)(8 + size);
-    unsigned char *resp_buf = malloc(resp_payload_len);
-    if (resp_buf == NULL) {
-        send_error(client_fd, ERR_INTERNAL, "response allocation failed");
-        free(data);
+    if (rc == -2) {
+        send_error(client_fd, ERR_INTERNAL, "failed to map file");
         return;
     }
 
-    write_u64(resp_buf, size);
+    /* mapping succeeded before any bytes went out, so the header below is safe to promise */
+    nervfs_header_t header;
+    header.magic = NERVFS_MAGIC;
+    header.version = NERVFS_VERSION;
+    header.opcode = OP_RESP_FILE_DATA;
+    header.payload_len = (uint32_t)(8 + size);
+    header.reserved = 0;
+
+    unsigned char header_buf[NERVFS_HEADER_SIZE];
+    serialize_header(&header, header_buf);
+    send_full(client_fd, header_buf, NERVFS_HEADER_SIZE);
+
+    unsigned char size_buf[8];
+    write_u64(size_buf, size);
+    send_full(client_fd, size_buf, 8);
+
     if (size > 0) {
-        memcpy(resp_buf + 8, data, size);
+        /* zero copy path, streams straight from the mapped page cache region to the socket */
+        send_full(client_fd, mapped, size);
     }
 
-    send_message(client_fd, OP_RESP_FILE_DATA, resp_buf, resp_payload_len);
-
-    free(resp_buf);
-    free(data);
+    fileops_close_mmap(mapped, size, file_fd);
 }
 
 static void handle_list(int client_fd)

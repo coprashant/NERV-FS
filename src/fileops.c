@@ -5,8 +5,8 @@
 #include <fcntl.h>
 #include <dirent.h>
 #include <limits.h>
-#include <sys/param.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 
 #include "fileops.h"
 #include "logging.h"
@@ -129,6 +129,51 @@ int fileops_read_file(const char *path, unsigned char **out_data, uint64_t *out_
     *out_data = buf;
     *out_size = size;
     return 0;
+}
+
+/* opens path read only and mmaps it, zero length files are special cased since mmap cannot map them */
+int fileops_open_for_mmap_read(const char *path, void **out_map, uint64_t *out_size, int *out_fd)
+{
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        return -1;
+    }
+
+    struct stat st;
+    if (fstat(fd, &st) < 0) {
+        log_error("fstat failed");
+        close(fd);
+        return -1;
+    }
+
+    uint64_t size = (uint64_t)st.st_size;
+
+    if (size == 0) {
+        *out_map = NULL;
+        *out_size = 0;
+        *out_fd = fd;
+        return 0;
+    }
+
+    void *mapped = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (mapped == MAP_FAILED) {
+        log_error("mmap failed");
+        close(fd);
+        return -2;
+    }
+
+    *out_map = mapped;
+    *out_size = size;
+    *out_fd = fd;
+    return 0;
+}
+
+void fileops_close_mmap(void *map, uint64_t size, int fd)
+{
+    if (map != NULL && size > 0) {
+        munmap(map, size);
+    }
+    close(fd);
 }
 
 int fileops_delete_file(const char *path)
