@@ -5,6 +5,7 @@
 #include "server.h"
 #include "net.h"
 #include "logging.h"
+#include "threadpool.h"
 
 volatile int nervfs_running = 1;
 
@@ -30,6 +31,8 @@ int main(int argc, char *argv[])
     }
 
     log_info("listener ready");
+
+    threadpool_init(NERVFS_THREAD_POOL_SIZE);
 
     /* phase 2 select loop, handles the listener and many clients at once */
     net_run_select_loop(listen_fd);

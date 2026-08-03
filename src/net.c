@@ -11,6 +11,7 @@
 #include "server.h"
 #include "logging.h"
 #include "protocol.h"
+#include "threadpool.h"
 
 int net_create_listener(int port)
 {
@@ -87,7 +88,7 @@ void net_run_echo_loop(int listen_fd)
     }
 }
 
-/* handles one readable client, returns 0 if still connected 1 if it should be closed */
+/* handles one readable client, returns 1 if caller should close the fd, 2 if handed off */
 static int handle_client_readable(int client_fd)
 {
     unsigned char header_buf[NERVFS_HEADER_SIZE];
@@ -109,13 +110,9 @@ static int handle_client_readable(int client_fd)
         return 1;
     }
 
-    char msg[128];
-    snprintf(msg, sizeof(msg), "received opcode %s payload len %u",
-             opcode_name(header.opcode), header.payload_len);
-    log_info(msg);
-
+    unsigned char *payload = NULL;
     if (header.payload_len > 0) {
-        unsigned char *payload = malloc(header.payload_len);
+        payload = malloc(header.payload_len);
         if (payload == NULL) {
             log_error("payload allocation failed");
             return 1;
@@ -127,12 +124,11 @@ static int handle_client_readable(int client_fd)
             free(payload);
             return 1;
         }
-
-        free(payload);
-        /* opcode dispatch to real handlers gets added in phase 5 */
     }
 
-    return 0;
+    /* request is fully read, hand it to a worker thread which now owns the fd */
+    threadpool_submit(client_fd, &header, payload);
+    return 2;
 }
 
 void net_run_select_loop(int listen_fd)
@@ -198,10 +194,12 @@ void net_run_select_loop(int listen_fd)
         for (int i = 0; i < NERVFS_MAX_CLIENTS; i++) {
             int fd = client_fds[i];
             if (fd != -1 && FD_ISSET(fd, &read_set)) {
-                if (handle_client_readable(fd)) {
+                int result = handle_client_readable(fd);
+                if (result == 1) {
                     close(fd);
-                    client_fds[i] = -1;
                 }
+                /* result 2 means the thread pool owns the fd now, just stop watching it */
+                client_fds[i] = -1;
             }
         }
     }
