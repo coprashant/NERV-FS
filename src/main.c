@@ -6,6 +6,7 @@
 #include "net.h"
 #include "logging.h"
 #include "threadpool.h"
+#include "fileops.h"
 
 volatile int nervfs_running = 1;
 
@@ -23,6 +24,11 @@ int main(int argc, char *argv[])
     }
 
     printf("NERV-FS starting on port %d\n", port);
+
+    if (fileops_init(NERVFS_STORAGE_ROOT) < 0) {
+        fprintf(stderr, "failed to set up storage root\n");
+        return 1;
+    }
 
     int listen_fd = net_create_listener(port);
     if (listen_fd < 0) {

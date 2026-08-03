@@ -7,6 +7,7 @@
 #include "protocol.h"
 #include "server.h"
 #include "logging.h"
+#include "handlers.h"
 
 static pthread_t workers[NERVFS_THREAD_POOL_SIZE];
 static int active_workers = 0;
@@ -17,7 +18,7 @@ static pthread_mutex_t queue_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t queue_cond = PTHREAD_COND_INITIALIZER;
 static volatile int pool_running = 1;
 
-/* placeholder work for a job, real upload download list delete chmod logic arrives in phase 5 */
+/* runs the real file operation for a job, phase 4 only sent a bare RESP_OK here */
 static void process_job(nervfs_job_t *job)
 {
     char msg[128];
@@ -25,16 +26,7 @@ static void process_job(nervfs_job_t *job)
              opcode_name(job->header.opcode), job->client_fd);
     log_info(msg);
 
-    nervfs_header_t resp;
-    resp.magic = NERVFS_MAGIC;
-    resp.version = NERVFS_VERSION;
-    resp.opcode = OP_RESP_OK;
-    resp.payload_len = 0;
-    resp.reserved = 0;
-
-    unsigned char resp_buf[NERVFS_HEADER_SIZE];
-    serialize_header(&resp, resp_buf);
-    send_full(job->client_fd, resp_buf, NERVFS_HEADER_SIZE);
+    dispatch_request(job->client_fd, &job->header, job->payload);
 
     close(job->client_fd);
 }
