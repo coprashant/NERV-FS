@@ -61,5 +61,7 @@ Thumbs.db
 *.swo
 .idea/
 .vscode-test/
-docs/
+docs/documentation.md
+docs/protocol_spec.md
+docs/diagnostics.md
 .vscode/
