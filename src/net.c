@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <netinet/in.h>
@@ -94,13 +95,13 @@ static int handle_client_readable(int client_fd)
     unsigned char header_buf[NERVFS_HEADER_SIZE];
     ssize_t got = recv_full(client_fd, header_buf, NERVFS_HEADER_SIZE);
 
-    if (got == 0) {
-        log_info("client disconnected");
+    if (got < 0) {
+        log_error("failed to read header");
         return 1;
     }
 
-    if (got < 0 || (size_t)got < NERVFS_HEADER_SIZE) {
-        log_error("failed to read full header");
+    if ((size_t)got < NERVFS_HEADER_SIZE) {
+        log_info("client disconnected before sending a full header");
         return 1;
     }
 
@@ -119,8 +120,14 @@ static int handle_client_readable(int client_fd)
         }
 
         ssize_t pgot = recv_full(client_fd, payload, header.payload_len);
-        if (pgot < 0 || (uint32_t)pgot < header.payload_len) {
-            log_error("failed to read full payload");
+        if (pgot < 0) {
+            log_error("failed to read payload");
+            free(payload);
+            return 1;
+        }
+
+        if ((uint32_t)pgot < header.payload_len) {
+            log_info("client disconnected before sending the full payload");
             free(payload);
             return 1;
         }
@@ -140,7 +147,7 @@ void net_run_select_loop(int listen_fd)
 
     log_info("phase 2 select loop watching listener and clients");
 
-    while (1) {
+    while (nervfs_running) {
         fd_set read_set;
         FD_ZERO(&read_set);
         FD_SET(listen_fd, &read_set);
@@ -157,6 +164,10 @@ void net_run_select_loop(int listen_fd)
 
         int ready = select(max_fd + 1, &read_set, NULL, NULL, NULL);
         if (ready < 0) {
+            if (errno == EINTR) {
+                /* likely SIGINT, let the while condition above notice and stop cleanly */
+                continue;
+            }
             log_error("select failed");
             continue;
         }
@@ -203,4 +214,14 @@ void net_run_select_loop(int listen_fd)
             }
         }
     }
+
+    /* shutting down, close any accepted connections not yet handed off to a worker */
+    for (int i = 0; i < NERVFS_MAX_CLIENTS; i++) {
+        if (client_fds[i] != -1) {
+            close(client_fds[i]);
+            client_fds[i] = -1;
+        }
+    }
+
+    log_info("select loop exiting");
 }
