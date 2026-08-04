@@ -124,7 +124,35 @@ static void handle_upload(int client_fd, const unsigned char *payload, uint32_t 
         return;
     }
 
-    if (fileops_write_file(path, payload + offset, file_size) < 0) {
+    /* name_len is now bounded by safe_resolve_path, safe to copy into a fixed buffer */
+    char name_key[NERVFS_MAX_NAME_LEN + 1];
+    memcpy(name_key, name, name_len);
+    name_key[name_len] = '\0';
+
+    /* uploads are exclusive writers, both in process and against other processes on the fd */
+    fileops_lock_acquire_write(name_key);
+
+    int fd = fileops_open_for_write(path);
+    if (fd < 0) {
+        fileops_lock_release_write(name_key);
+        send_error(client_fd, ERR_INTERNAL, "failed to open file for writing");
+        return;
+    }
+
+    if (fileops_lock_fd(fd, NERVFS_LOCK_WRITE) < 0) {
+        close(fd);
+        fileops_lock_release_write(name_key);
+        send_error(client_fd, ERR_INTERNAL, "failed to lock file");
+        return;
+    }
+
+    int write_rc = fileops_write_fd(fd, payload + offset, file_size);
+
+    fileops_unlock_fd(fd);
+    close(fd);
+    fileops_lock_release_write(name_key);
+
+    if (write_rc < 0) {
         send_error(client_fd, ERR_INTERNAL, "failed to write file");
         return;
     }
@@ -151,21 +179,37 @@ static void handle_download(int client_fd, const unsigned char *payload, uint32_
         return;
     }
 
+    char name_key[NERVFS_MAX_NAME_LEN + 1];
+    memcpy(name_key, payload + 2, name_len);
+    name_key[name_len] = '\0';
+
+    /* downloads are shared readers, they only block while a writer currently holds the file */
+    fileops_lock_acquire_read(name_key);
+
     void *mapped = NULL;
     uint64_t size = 0;
     int file_fd = -1;
 
     int rc = fileops_open_for_mmap_read(path, &mapped, &size, &file_fd);
     if (rc == -1) {
+        fileops_lock_release_read(name_key);
         send_error(client_fd, ERR_NOT_FOUND, "file not found");
         return;
     }
     if (rc == -2) {
+        fileops_lock_release_read(name_key);
         send_error(client_fd, ERR_INTERNAL, "failed to map file");
         return;
     }
 
-    /* mapping succeeded before any bytes went out, so the header below is safe to promise */
+    if (fileops_lock_fd(file_fd, NERVFS_LOCK_READ) < 0) {
+        fileops_close_mmap(mapped, size, file_fd);
+        fileops_lock_release_read(name_key);
+        send_error(client_fd, ERR_INTERNAL, "failed to lock file");
+        return;
+    }
+
+    /* mapping and locking both succeeded before any bytes went out, header below is safe to promise */
     nervfs_header_t header;
     header.magic = NERVFS_MAGIC;
     header.version = NERVFS_VERSION;
@@ -186,7 +230,9 @@ static void handle_download(int client_fd, const unsigned char *payload, uint32_
         send_full(client_fd, mapped, size);
     }
 
+    fileops_unlock_fd(file_fd);
     fileops_close_mmap(mapped, size, file_fd);
+    fileops_lock_release_read(name_key);
 }
 
 static void handle_list(int client_fd)
@@ -252,7 +298,18 @@ static void handle_delete(int client_fd, const unsigned char *payload, uint32_t 
         return;
     }
 
-    if (fileops_delete_file(path) < 0) {
+    char name_key[NERVFS_MAX_NAME_LEN + 1];
+    memcpy(name_key, payload + 2, name_len);
+    name_key[name_len] = '\0';
+
+    /* delete is a destructive mutation, treated the same as a writer for locking purposes */
+    fileops_lock_acquire_write(name_key);
+
+    int rc = fileops_delete_file(path);
+
+    fileops_lock_release_write(name_key);
+
+    if (rc < 0) {
         send_error(client_fd, ERR_NOT_FOUND, "file not found");
         return;
     }

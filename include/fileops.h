@@ -23,6 +23,12 @@ int safe_resolve_path(const char *name, uint16_t name_len, char *out_path, size_
 /* creates or overwrites path with size bytes from data, returns 0 or negative */
 int fileops_write_file(const char *path, const unsigned char *data, uint64_t size);
 
+/* writes size bytes from data to an already open fd, returns 0 or negative */
+int fileops_write_fd(int fd, const unsigned char *data, uint64_t size);
+
+/* opens path for writing truncating any existing content, returns fd or negative */
+int fileops_open_for_write(const char *path);
+
 /* reads path fully into a malloc buffer, caller must free it, returns 0 or negative */
 int fileops_read_file(const char *path, unsigned char **out_data, uint64_t *out_size);
 
@@ -34,6 +40,26 @@ int fileops_open_for_mmap_read(const char *path, void **out_map, uint64_t *out_s
 
 /* unmaps a region from fileops_open_for_mmap_read and closes its fd */
 void fileops_close_mmap(void *map, uint64_t size, int fd);
+
+/* which kind of fcntl advisory lock to place on a file descriptor */
+typedef enum {
+    NERVFS_LOCK_READ,
+    NERVFS_LOCK_WRITE
+} nervfs_lock_kind_t;
+
+/* places a blocking fcntl advisory lock on the whole file, cross process safety layer */
+int fileops_lock_fd(int fd, nervfs_lock_kind_t kind);
+
+/* releases a fcntl advisory lock placed by fileops_lock_fd */
+int fileops_unlock_fd(int fd);
+
+/* in process locking policy keyed by filename */
+/* uploads and deletes are exclusive writers, downloads are shared readers */
+/* a pending writer blocks new readers and other writers until it releases */
+void fileops_lock_acquire_write(const char *name);
+void fileops_lock_release_write(const char *name);
+void fileops_lock_acquire_read(const char *name);
+void fileops_lock_release_read(const char *name);
 
 /* removes path, returns 0 or negative */
 int fileops_delete_file(const char *path);
