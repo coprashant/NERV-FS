@@ -14,7 +14,7 @@ A three-tier web stack sits on top of the core engine for browser access:
 ```
 ┌─────────────┐   REST/JSON over HTTP   ┌──────────────┐   Custom binary protocol   ┌──────────────┐
 │  React UI   │ ──────────────────────▶ │ Node Bridge  │ ─────────────────────────▶ │  C Server    │
-│  (browser)  │ ◀──────────────────────  │  (Express)   │ ◀───────────────────────── │  (NERV-FS)   │
+│  (browser)  │ ◀────────────────────── │  (Express)   │ ◀───────────────────────── │  (NERV-FS)   │
 └─────────────┘                         └──────────────┘                            └──────────────┘
      :5173                                   :4000                                       :9000
 ```
@@ -35,6 +35,46 @@ The C server is the grading-relevant core. The Node bridge and React UI are a de
 - **CLI test client** — `client/nervfs_client.c` exercises every opcode from the command line
 - **React web UI** — file list, upload with real-time progress bar, download, delete, and a permissions modal
 - **Node.js REST bridge** — translates the five REST endpoints into NERV-FS binary frames and back
+
+---
+## Admin Authentication
+
+The bridge now includes a simple administrator authentication system to protect file access.
+
+### Features
+
+- `POST /auth/login` endpoint for administrator login
+- Protects all `/files/*` routes with a signed admin token
+- Login screen shown before accessing files
+- Authentication token stored in `localStorage`
+- API requests automatically include:
+
+```http
+Authorization: Bearer <token>
+```
+
+- Logout clears the stored token
+
+### Environment Variables
+
+Start the bridge with a secure password and signing secret:
+
+```bash
+cd bridge
+
+ADMIN_PASSWORD="your-strong-password" \
+AUTH_SECRET="your-long-random-secret" \
+node server.js
+```
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `ADMIN_PASSWORD` | Recommended | Password for the admin login. Defaults to `admin` if not set. |
+| `AUTH_SECRET` | Recommended | Secret used to sign authentication tokens. Use a long random string. |
+
+> **Warning**
+>
+> The default password (`admin`) is intended only for local development. If exposing the bridge through Cloudflare Tunnel or any public network, **always** set both `ADMIN_PASSWORD` and `AUTH_SECRET`.
 
 ---
 
@@ -173,13 +213,41 @@ Three terminals, in order:
 ./nervfs_server 9000
 
 # Terminal 2 — Node bridge
-cd bridge && npm install && node server.js
+cd bridge
+npm install
+
+ADMIN_PASSWORD="your-strong-password" \
+AUTH_SECRET="your-long-random-secret" \
+node server.js
 
 # Terminal 3 — React dev server
-cd frontend && npm install && npm run dev
+cd frontend
+npm install
+npm run dev
 ```
 
 Open `http://localhost:5173` in a browser.
+
+### Authentication
+
+The Node bridge includes a simple administrator authentication layer.
+
+**Features**
+
+- `POST /auth/login` endpoint for administrator login.
+- All `/files/*` routes require a valid signed admin token.
+- The frontend displays a login screen before allowing file access.
+- Authentication tokens are stored in `localStorage`.
+- Every API request automatically includes:
+
+```http
+Authorization: Bearer <token>
+```
+
+- Logout removes the stored token.
+
+> **Note:** If `ADMIN_PASSWORD` is not set, the default password is `admin`. This is intended only for local development. When exposing the bridge (for example via Cloudflare Tunnel), always configure both `ADMIN_PASSWORD` and `AUTH_SECRET`.
+
 
 ### CLI client
 
@@ -232,11 +300,9 @@ sha256sum /tmp/bigfile /tmp/bigfile_out   # must match
 
 ## Security Notes
 
-- **No authentication** — every connected client has full read/write access to the storage root. Never point the storage root at a real home directory or sensitive path.
+- **Admin authentication** is enforced by the Node bridge. Clients must log in through `POST /auth/login`, and all `/files/*` endpoints require a valid signed admin token.
 - **Path traversal protection** is enforced centrally in `safe_resolve_path()` (`fileops.c`). All filename-taking handlers route through it; filenames containing `..`, a leading `/`, or null bytes are rejected before any `open()` call.
-- Intended for sandboxed/demo use. Authentication (a `REQ_LOGIN` opcode + per-connection session flag in the reserved header field) is documented as a v2 extension.
-
----
+- Use a strong `ADMIN_PASSWORD` and `AUTH_SECRET` before exposing the bridge to any public network.
 
 ## Known Limitations
 

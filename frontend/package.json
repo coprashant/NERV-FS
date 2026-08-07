@@ -3,11 +3,14 @@
   "version": "0.1.0",
   "description": "React web ui for NERV FS phase 11",
   "scripts": {
-    "dev": "vite"
+    "dev": "vite",
+    "build": "vite build"
   },
   "dependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "axios": "^1.7.2"
+    "axios": "^1.7.2",
+    "vite": "^5.3.3"
   }
 }
