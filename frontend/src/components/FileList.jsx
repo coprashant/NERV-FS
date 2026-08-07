@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { deleteFile, downloadFile } from '../api/nervfsApi';
 import PermissionsModal from './PermissionsModal';
 
@@ -16,8 +16,22 @@ export default function FileList({ files, onChanged }) {
   const [permissionsFile, setPermissionsFile] = useState(null);
   const [busyName, setBusyName] = useState('');
   const [error, setError] = useState('');
+  const [openMenu, setOpenMenu] = useState('');
+  const menuRef = useRef(null);
+
+  useEffect(() => {
+    function handleOutsideClick(event) {
+      if (menuRef.current && !menuRef.current.contains(event.target)) {
+        setOpenMenu('');
+      }
+    }
+
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, []);
 
   async function handleDelete(name) {
+    setOpenMenu('');
     setBusyName(name);
     setError('');
 
@@ -31,6 +45,16 @@ export default function FileList({ files, onChanged }) {
     }
   }
 
+  function openPermissions(file) {
+    setOpenMenu('');
+    setPermissionsFile(file);
+  }
+
+  function triggerDownload(name) {
+    setOpenMenu('');
+    downloadFile(name);
+  }
+
   return (
     <section className="fileSection">
       {error && <p className="error">{error}</p>}
@@ -39,7 +63,7 @@ export default function FileList({ files, onChanged }) {
           <tr>
             <th>Name</th>
             <th>Size</th>
-            <th>Mode</th>
+            <th className="modeCol">Mode</th>
             <th>Actions</th>
           </tr>
         </thead>
@@ -55,21 +79,54 @@ export default function FileList({ files, onChanged }) {
               <tr key={file.name}>
                 <td className="nameCell">{file.name}</td>
                 <td>{formatSize(file.size)}</td>
-                <td>{formatMode(file.mode)}</td>
-                <td className="actions">
-                  <button type="button" onClick={() => downloadFile(file.name)}>
-                    Download
-                  </button>
-                  <button type="button" onClick={() => setPermissionsFile(file)}>
-                    Mode
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleDelete(file.name)}
-                    disabled={busyName === file.name}
-                  >
-                    Delete
-                  </button>
+                <td className="modeCol">{formatMode(file.mode)}</td>
+                <td className="actionsCell">
+                  <div className="actions">
+                    <button type="button" onClick={() => triggerDownload(file.name)}>
+                      Download
+                    </button>
+                    <button type="button" onClick={() => openPermissions(file)}>
+                      Mode
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(file.name)}
+                      disabled={busyName === file.name}
+                    >
+                      Delete
+                    </button>
+                  </div>
+
+                  <div className="actionsMenu" ref={openMenu === file.name ? menuRef : null}>
+                    <button
+                      type="button"
+                      className="kebabButton"
+                      onClick={() => setOpenMenu(openMenu === file.name ? '' : file.name)}
+                      aria-label="Actions"
+                      aria-expanded={openMenu === file.name}
+                    >
+                      &#8942;
+                    </button>
+
+                    {openMenu === file.name && (
+                      <div className="actionsDropdown" role="menu">
+                        <p className="dropdownModeValue">Mode: {formatMode(file.mode)}</p>
+                        <button type="button" onClick={() => triggerDownload(file.name)}>
+                          Download
+                        </button>
+                        <button type="button" onClick={() => openPermissions(file)}>
+                          Mode
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(file.name)}
+                          disabled={busyName === file.name}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))
