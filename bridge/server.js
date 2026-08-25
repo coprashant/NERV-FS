@@ -103,8 +103,8 @@ app.use('/files', requireAdmin);
 
 app.get('/files', async (req, res) => {
   try {
-    const files = await listFiles(NERVFS_HOST, NERVFS_PORT);
-    res.json({ files });
+    const { files, serverMs } = await listFiles(NERVFS_HOST, NERVFS_PORT);
+    res.json({ files, serverMs });
   } catch (err) {
     sendError(res, err);
   }
@@ -116,8 +116,13 @@ app.post('/files', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'multipart field "file" is required' });
     }
 
-    await uploadFile(NERVFS_HOST, NERVFS_PORT, req.file.originalname, req.file.buffer);
-    return res.status(201).json({ status: 'ok' });
+    const { serverMs, metrics } = await uploadFile(
+      NERVFS_HOST,
+      NERVFS_PORT,
+      req.file.originalname,
+      req.file.buffer,
+    );
+    return res.status(201).json({ status: 'ok', serverMs, metrics });
   } catch (err) {
     return sendError(res, err);
   }
@@ -125,9 +130,10 @@ app.post('/files', upload.single('file'), async (req, res) => {
 
 app.get('/files/:name', async (req, res) => {
   try {
-    const data = await downloadFile(NERVFS_HOST, NERVFS_PORT, req.params.name);
+    const { data, serverMs } = await downloadFile(NERVFS_HOST, NERVFS_PORT, req.params.name);
     res.setHeader('Content-Disposition', `attachment; filename="${req.params.name}"`);
     res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('X-Server-Time-Ms', String(serverMs));
     res.send(data);
   } catch (err) {
     sendError(res, err);
@@ -136,8 +142,8 @@ app.get('/files/:name', async (req, res) => {
 
 app.delete('/files/:name', async (req, res) => {
   try {
-    await deleteFile(NERVFS_HOST, NERVFS_PORT, req.params.name);
-    res.json({ status: 'ok' });
+    const { serverMs } = await deleteFile(NERVFS_HOST, NERVFS_PORT, req.params.name);
+    res.json({ status: 'ok', serverMs });
   } catch (err) {
     sendError(res, err);
   }
@@ -150,8 +156,8 @@ app.patch('/files/:name/permissions', async (req, res) => {
       return res.status(400).json({ error: 'mode must be a numeric permission value' });
     }
 
-    await chmodFile(NERVFS_HOST, NERVFS_PORT, req.params.name, mode);
-    return res.json({ status: 'ok' });
+    const { serverMs } = await chmodFile(NERVFS_HOST, NERVFS_PORT, req.params.name, mode);
+    return res.json({ status: 'ok', serverMs });
   } catch (err) {
     return sendError(res, err);
   }

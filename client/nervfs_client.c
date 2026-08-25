@@ -9,8 +9,6 @@
 
 #include "protocol.h"
 
-/* small big endian helpers matching the server side ones in handlers.c */
-
 static uint16_t read_u16(const unsigned char *p)
 {
     uint16_t v;
@@ -96,7 +94,6 @@ static int send_request(int fd, uint16_t opcode, const unsigned char *payload, u
     return 0;
 }
 
-/* reads the response header, returns 0 on success negative on error */
 static int read_response_header(int fd, nervfs_header_t *out)
 {
     unsigned char header_buf[NERVFS_HEADER_SIZE];
@@ -114,11 +111,22 @@ static int read_response_header(int fd, nervfs_header_t *out)
     return 0;
 }
 
-/* prints RESP_OK plainly, or reads and prints a RESP_ERR body, returns 0 if ok */
 static int print_simple_result(int fd, const nervfs_header_t *resp)
 {
     if (resp->opcode == OP_RESP_OK) {
-        printf("ok\n");
+        if (resp->payload_len == 24) {
+            unsigned char buf[24];
+            if (recv_full(fd, buf, 24) == 24) {
+                uint64_t net_us = read_u64(buf);
+                uint64_t write_us = read_u64(buf + 8);
+                uint64_t sync_us = read_u64(buf + 16);
+                printf("ok (total %.3f ms | net %.3f ms | write %.3f ms | sync %.3f ms)\n",
+                       resp->reserved / 1000.0, net_us / 1000.0, write_us / 1000.0, sync_us / 1000.0);
+                return 0;
+            }
+        }
+
+        printf("ok (%.3f ms)\n", resp->reserved / 1000.0);
         return 0;
     }
 
@@ -167,7 +175,7 @@ static int do_list(int fd)
     uint32_t count = (uint32_t)((buf[0] << 24) | (buf[1] << 16) | (buf[2] << 8) | buf[3]);
     off += 4;
 
-    printf("%u file(s)\n", count);
+    printf("%u file(s) (%.3f ms)\n", count, resp.reserved / 1000.0);
     for (uint32_t i = 0; i < count; i++) {
         uint16_t nlen = read_u16(buf + off);
         off += 2;
@@ -295,7 +303,8 @@ static int do_download(int fd, const char *remote_name, const char *local_file)
     fclose(out);
     free(data);
 
-    printf("downloaded %llu bytes to %s\n", (unsigned long long)size, local_file);
+    printf("downloaded %llu bytes to %s (server prep %.3f ms)\n",
+           (unsigned long long)size, local_file, resp.reserved / 1000.0);
     return 0;
 }
 

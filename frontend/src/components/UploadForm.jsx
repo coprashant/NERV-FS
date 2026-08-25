@@ -10,7 +10,7 @@ const isValidName = (name) =>
   name !== '..' &&
   !/\0/.test(name);
 
-export default function UploadForm({ onUploaded }) {
+export default function UploadForm({ onUploaded, onNotify }) {
   const inputRef = useRef(null);
   const [progress, setProgress] = useState(0);
   const [uploading, setUploading] = useState(false);
@@ -23,7 +23,11 @@ export default function UploadForm({ onUploaded }) {
     }
 
     if (!isValidName(file.name)) {
-      setError('Invalid filename.');
+      const errMsg = 'Invalid filename.';
+      setError(errMsg);
+      if (onNotify) {
+        onNotify('error', 'Upload Error', errMsg);
+      }
       event.target.value = '';
       return;
     }
@@ -33,12 +37,27 @@ export default function UploadForm({ onUploaded }) {
     setUploading(true);
 
     try {
-      await uploadFile(file, setProgress);
+      const { serverMs, clientMs } = await uploadFile(file, setProgress);
       setProgress(100);
+
+      if (onNotify) {
+        onNotify(
+          'success',
+          'Upload Complete',
+          `Successfully uploaded ${file.name}`,
+          serverMs,
+          clientMs
+        );
+      }
+
       await onUploaded();
       event.target.value = '';
     } catch (err) {
-      setError(err.response?.data?.error || err.message || 'Upload failed.');
+      const errMsg = err.response?.data?.error || err.message || 'Upload failed.';
+      setError(errMsg);
+      if (onNotify) {
+        onNotify('error', 'Upload Failed', errMsg);
+      }
     } finally {
       setUploading(false);
     }

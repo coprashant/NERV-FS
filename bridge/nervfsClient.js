@@ -37,6 +37,7 @@ function parseHeader(buf) {
     version: buf.readUInt8(1),
     opcode: buf.readUInt16BE(2),
     payloadLen: buf.readUInt32BE(4),
+    reserved: buf.readBigUInt64BE(8),
   };
 
   if (header.magic !== MAGIC || header.version !== VERSION) {
@@ -192,7 +193,7 @@ async function listFiles(host, port) {
     files.push({ name, size: size.toString(), mode });
   }
 
-  return files;
+  return { files, serverMs: Number(header.reserved) / 1000 };
 }
 
 async function uploadFile(host, port, filename, fileBuffer) {
@@ -207,6 +208,17 @@ async function uploadFile(host, port, filename, fileBuffer) {
   const { header, body } = await request(host, port, OPCODES.REQ_UPLOAD, payload);
   throwIfError(header, body);
   expectOpcode(header, OPCODES.RESP_OK);
+
+  let metrics = null;
+  if (body.length >= 24) {
+    metrics = {
+      networkMs: Number(body.readBigUInt64BE(0)) / 1000,
+      writeMs: Number(body.readBigUInt64BE(8)) / 1000,
+      syncMs: Number(body.readBigUInt64BE(16)) / 1000,
+    };
+  }
+
+  return { serverMs: Number(header.reserved) / 1000, metrics };
 }
 
 async function downloadFile(host, port, filename) {
@@ -216,7 +228,8 @@ async function downloadFile(host, port, filename) {
   expectOpcode(header, OPCODES.RESP_FILE_DATA);
 
   const fileSize = Number(body.readBigUInt64BE(0));
-  return body.subarray(8, 8 + fileSize);
+  const data = body.subarray(8, 8 + fileSize);
+  return { data, serverMs: Number(header.reserved) / 1000 };
 }
 
 async function deleteFile(host, port, filename) {
@@ -224,6 +237,7 @@ async function deleteFile(host, port, filename) {
   const { header, body } = await request(host, port, OPCODES.REQ_DELETE, payload);
   throwIfError(header, body);
   expectOpcode(header, OPCODES.RESP_OK);
+  return { serverMs: Number(header.reserved) / 1000 };
 }
 
 async function chmodFile(host, port, filename, mode) {
@@ -233,6 +247,7 @@ async function chmodFile(host, port, filename, mode) {
   const { header, body } = await request(host, port, OPCODES.REQ_CHMOD, payload);
   throwIfError(header, body);
   expectOpcode(header, OPCODES.RESP_OK);
+  return { serverMs: Number(header.reserved) / 1000 };
 }
 
 module.exports = {

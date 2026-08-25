@@ -12,7 +12,7 @@ const formatSize = (value) => {
 
 const formatMode = (mode) => mode.toString(8).padStart(4, '0');
 
-export default function FileList({ files, onChanged }) {
+export default function FileList({ files, onChanged, onNotify }) {
   const [permissionsFile, setPermissionsFile] = useState(null);
   const [busyName, setBusyName] = useState('');
   const [error, setError] = useState('');
@@ -36,10 +36,25 @@ export default function FileList({ files, onChanged }) {
     setError('');
 
     try {
-      await deleteFile(name);
+      const { serverMs, clientMs } = await deleteFile(name);
+
+      if (onNotify) {
+        onNotify(
+          'info',
+          'File Deleted',
+          `Successfully deleted ${name}`,
+          serverMs,
+          clientMs
+        );
+      }
+
       await onChanged();
     } catch (err) {
-      setError(err.response?.data?.error || err.message || 'Delete failed.');
+      const errMsg = err.response?.data?.error || err.message || 'Delete failed.';
+      setError(errMsg);
+      if (onNotify) {
+        onNotify('error', 'Delete Failed', errMsg);
+      }
     } finally {
       setBusyName('');
     }
@@ -53,6 +68,10 @@ export default function FileList({ files, onChanged }) {
   function triggerDownload(name) {
     setOpenMenu('');
     downloadFile(name);
+
+    if (onNotify) {
+      onNotify('info', 'Download Started', `Downloading ${name}...`);
+    }
   }
 
   return (
@@ -139,6 +158,7 @@ export default function FileList({ files, onChanged }) {
           file={permissionsFile}
           onClose={() => setPermissionsFile(null)}
           onSaved={onChanged}
+          onNotify={onNotify}
         />
       )}
     </section>
