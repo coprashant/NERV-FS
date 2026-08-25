@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <time.h>
 
 #include "threadpool.h"
 #include "protocol.h"
@@ -18,7 +19,7 @@ static pthread_mutex_t queue_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t queue_cond = PTHREAD_COND_INITIALIZER;
 static volatile int pool_running = 1;
 
-/* runs the real file operation for a job, phase 4 only sent a bare RESP_OK here */
+/* runs the real file operation for a job */
 static void process_job(nervfs_job_t *job)
 {
     char msg[128];
@@ -26,7 +27,11 @@ static void process_job(nervfs_job_t *job)
              opcode_name(job->header.opcode), job->client_fd);
     log_info(msg);
 
-    dispatch_request(job->client_fd, &job->header, job->payload);
+    // Record start time before dispatching the request
+    struct timespec net_start;
+    clock_gettime(CLOCK_MONOTONIC, &net_start);
+
+    dispatch_request_timed(job->client_fd, &job->header, job->payload, net_start);
 
     close(job->client_fd);
 }
