@@ -38,6 +38,8 @@ frontend/package-lock.json
 frontend/yarn.lock
 bridge/dist/
 frontend/.vite/
+*/package-lock.json
+*/yarn.lock
 
 # -----------------------------
 # Environment files (keep examples)
