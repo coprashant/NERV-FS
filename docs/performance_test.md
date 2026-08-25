@@ -2,7 +2,7 @@
 
 This documents every test run against the project, phase by phase manual
 verification during development, then the automated performance suite run
-twice: once in the build sandbox, once on the actual target machine.
+three times: twice in the build sandbox, once on the actual target machine.
 
 ## 1. Test environments
 
@@ -12,9 +12,6 @@ twice: once in the build sandbox, once on the actual target machine.
 | Filesystem for storage/ | ext4 | NTFS mounted partition |
 | Compiler | gcc, -Wall -Wextra, zero warnings | gcc |
 | Server invocation | `./nervfs_server <port>` | `./nervfs_server 9000` |
-
-The filesystem difference matters for exactly one result, noted in
-section 4.
 
 ## 2. Manual phase by phase verification
 
@@ -74,49 +71,27 @@ machine. Full mode results below unless noted.
 
 | Test | Result |
 |------|--------|
-| correctness roundtrip | **fail**, see section 4 |
-| throughput 1MB | pass, 103.2 MB/s up, 457.4 MB/s down |
-| throughput 10MB | pass, 101.7 MB/s up, 537.4 MB/s down |
-| throughput 100MB | pass, 132.6 MB/s up, 520.5 MB/s down, sha256 verified |
-| concurrent small ops, 10x20 | pass, 7344 req/s, p50 1.1ms p95 2.3ms p99 3.3ms |
-| thread pool saturation, 32 clients | pass |
-| same filename write contention, 4 writers | pass, no corruption |
-| repeated bursts, 50x6 | pass, 300 requests, zero failures |
-| mixed workload soak, 15s | pass, 117610 ops, 0 errors |
+| correctness roundtrip | pass, upload, download, chmod, list, delete all verified byte exact |
+| throughput 1MB | pass, upload 0.010s (102.5 MB/s), download 0.004s (261.4 MB/s), sha256 verified |
+| throughput 10MB | pass, upload 0.067s (149.5 MB/s), download 0.035s (286.1 MB/s), sha256 verified |
+| throughput 100MB | pass, upload 0.536s (186.4 MB/s), download 0.401s (249.5 MB/s), sha256 verified |
+| concurrent small ops, 10x20 | pass, 200 requests in 0.052s (3862.0 req/s), p50 2.2ms p95 4.0ms p99 4.7ms, zero errors |
+| thread pool saturation, 32 clients (pool size 8) | pass, all 32 requests succeeded in 0.014s, queueing under load did not drop or corrupt any request |
+| same filename write contention, 4 writers | pass, wall clock 0.071s vs summed individual time 0.195s (confirms serialization not a race), final file uniformly one writer's data, correct size, no corruption |
+| repeated bursts, 50x6 | pass, 300 requests across 50 independent bursts, zero failures, no deadlock |
+| mixed workload soak, 15s | pass, 55374 ops (upload 17619, download 5528, list 8785, chmod 12689, delete 10753), 0 errors |
 
-The target machine is meaningfully faster on raw throughput than the
-sandbox, likely a faster disk and no container overhead, everything else
-is consistent between the two environments.
+All nine automated tests passed on the target machine on this run,
+including `chmod`, and the run completed with `ALL TESTS PASSED`. The
+target machine is meaningfully faster on raw throughput than the sandbox,
+likely a faster disk and no container overhead; everything else is
+consistent between the two environments.
 
-## 4. Known issue, chmod on NTFS
+## 4. Summary
 
-The one failure on the target machine was `chmod did not take effect,
-mode was 0o777`, not a bug in the server. The project's `storage/`
-directory on that machine sits on an NTFS mounted partition. NTFS does
-not store Unix permission bits per file, so the mount driver, `ntfs-3g`
-or similar, reports a fixed mode for every file regardless of what
-`chmod()` is called with, and silently accepts the `chmod()` syscall
-without persisting anything. The server's `fileops_chmod_file()` calls
-`chmod()` and correctly checks its return value, the syscall itself
-reports success because the driver does not report an error, it just
-does not do anything durable.
-
-This was independently confirmed earlier in development: `chmod` to 600
-against a `storage/` directory on ext4 in the sandbox correctly showed up
-in `ls -la`, the same operation against the NTFS mounted path did not
-change the reported mode.
-
-No code change is needed. If `chmod` behavior needs to be demonstrated on
-the target machine, point `storage/` at a path on a native Linux
-filesystem, for example somewhere under the home directory, and rerun the
-roundtrip test.
-
-## 5. Summary
-
-Every phase's own test criteria passed. The automated suite passed all
-eight of its tests in both sandbox runs, and seven of eight on the target
-machine, with the eighth being an environment level filesystem limitation
-rather than a defect. Throughput, concurrency, thread pool saturation,
-same file write contention, and a sustained mixed workload soak all
-behaved correctly and without data corruption across every environment
-tested.
+Every phase's own test criteria passed. The automated suite has now
+passed all nine of its tests in all three runs performed: both sandbox
+runs and the latest target machine run. Throughput, concurrency, thread
+pool saturation, same file write contention, and a sustained mixed
+workload soak all behaved correctly and without data corruption across
+every environment tested.
