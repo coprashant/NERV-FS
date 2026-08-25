@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
+const ngrok = require('@ngrok/ngrok');
 const rateLimit = require('express-rate-limit');
 const {
   listFiles,
@@ -15,6 +16,7 @@ const {
 } = require('./nervfsClient');
 
 const app = express();
+app.set('trust proxy', 1);
 const upload = multer();
 
 // Mandatory Security Environment Checks
@@ -203,6 +205,19 @@ app.patch('/files/:name/permissions', async (req, res) => {
   }
 });
 
-app.listen(BRIDGE_PORT, () => {
+app.listen(BRIDGE_PORT, async () => {
   console.log(`NERV-FS secure bridge listening on :${BRIDGE_PORT}, proxying ${NERVFS_HOST}:${NERVFS_PORT}`);
+
+  if (process.env.NGROK_AUTHTOKEN) {
+    try {
+      const listener = await ngrok.forward({
+        addr: BRIDGE_PORT,
+        authtoken: process.env.NGROK_AUTHTOKEN,
+        domain: process.env.NGROK_DOMAIN, 
+      });
+      console.log(`[NGROK] Public tunnel active at: ${listener.url()}`);
+    } catch (err) {
+      console.error('[NGROK] Failed to start tunnel:', err.message);
+    }
+  }
 });
