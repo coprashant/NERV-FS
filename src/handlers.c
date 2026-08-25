@@ -1,15 +1,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <arpa/inet.h>
 #include <endian.h>
 #include <limits.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include "handlers.h"
 #include "protocol.h"
 #include "fileops.h"
-
-/* small big endian helpers for reading and writing payload fields */
 
 static uint16_t read_u16(const unsigned char *p)
 {
@@ -50,15 +51,28 @@ static void write_u64(unsigned char *p, uint64_t v)
     memcpy(p, &n, 8);
 }
 
-/* sends a full header plus optional payload to the client */
-static void send_message(int client_fd, uint16_t opcode, const unsigned char *payload, uint32_t payload_len)
+static uint64_t elapsed_microseconds(const struct timespec *start, const struct timespec *end)
+{
+    int64_t sec_diff = (int64_t)(end->tv_sec - start->tv_sec);
+    int64_t nsec_diff = (int64_t)(end->tv_nsec - start->tv_nsec);
+
+    if (nsec_diff < 0) {
+        sec_diff -= 1;
+        nsec_diff += 1000000000L;
+    }
+
+    return (uint64_t)(sec_diff * 1000000L + nsec_diff / 1000);
+}
+
+static void send_message(int client_fd, uint16_t opcode, const unsigned char *payload,
+                          uint32_t payload_len, uint64_t elapsed_us)
 {
     nervfs_header_t header;
     header.magic = NERVFS_MAGIC;
     header.version = NERVFS_VERSION;
     header.opcode = opcode;
     header.payload_len = payload_len;
-    header.reserved = 0;
+    header.reserved = elapsed_us;
 
     unsigned char header_buf[NERVFS_HEADER_SIZE];
     serialize_header(&header, header_buf);
@@ -69,9 +83,9 @@ static void send_message(int client_fd, uint16_t opcode, const unsigned char *pa
     }
 }
 
-static void send_ok(int client_fd)
+static void send_ok(int client_fd, uint64_t elapsed_us)
 {
-    send_message(client_fd, OP_RESP_OK, NULL, 0);
+    send_message(client_fd, OP_RESP_OK, NULL, 0, elapsed_us);
 }
 
 static void send_error(int client_fd, uint16_t err_code, const char *msg)
@@ -88,12 +102,18 @@ static void send_error(int client_fd, uint16_t err_code, const char *msg)
     write_u16(buf + 2, msg_len);
     memcpy(buf + 4, msg, msg_len);
 
-    send_message(client_fd, OP_RESP_ERR, buf, payload_len);
+    send_message(client_fd, OP_RESP_ERR, buf, payload_len, 0);
     free(buf);
 }
 
-static void handle_upload(int client_fd, const unsigned char *payload, uint32_t payload_len)
+static void handle_upload_timed(int client_fd, const unsigned char *payload, uint32_t payload_len, struct timespec net_start)
 {
+    struct timespec net_end, write_start, write_end, sync_end;
+
+    /* Measure socket network read time */
+    clock_gettime(CLOCK_MONOTONIC, &net_end);
+    uint64_t network_us = elapsed_microseconds(&net_start, &net_end);
+
     if (payload_len < 2) {
         send_error(client_fd, ERR_BAD_REQUEST, "upload payload too short");
         return;
@@ -124,40 +144,38 @@ static void handle_upload(int client_fd, const unsigned char *payload, uint32_t 
         return;
     }
 
-    /* name_len is now bounded by safe_resolve_path, safe to copy into a fixed buffer */
-    char name_key[NERVFS_MAX_NAME_LEN + 1];
-    memcpy(name_key, name, name_len);
-    name_key[name_len] = '\0';
-
-    /* uploads are exclusive writers, both in process and against other processes on the fd */
-    fileops_lock_acquire_write(name_key);
-
-    int fd = fileops_open_for_write(path);
+    /* Measure RAM page cache write time */
+    clock_gettime(CLOCK_MONOTONIC, &write_start);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
-        fileops_lock_release_write(name_key);
-        send_error(client_fd, ERR_INTERNAL, "failed to open file for writing");
+        send_error(client_fd, ERR_INTERNAL, "failed to open file");
         return;
     }
 
-    if (fileops_lock_fd(fd, NERVFS_LOCK_WRITE) < 0) {
+    ssize_t bytes_written = write(fd, payload + offset, file_size);
+    clock_gettime(CLOCK_MONOTONIC, &write_end);
+    uint64_t write_us = elapsed_microseconds(&write_start, &write_end);
+
+    if (bytes_written < 0 || (size_t)bytes_written != file_size) {
         close(fd);
-        fileops_lock_release_write(name_key);
-        send_error(client_fd, ERR_INTERNAL, "failed to lock file");
+        send_error(client_fd, ERR_INTERNAL, "failed to write file body");
         return;
     }
 
-    int write_rc = fileops_write_fd(fd, payload + offset, file_size);
-
-    fileops_unlock_fd(fd);
+    /* Measure physical disk sync time */
+    fsync(fd);
+    clock_gettime(CLOCK_MONOTONIC, &sync_end);
     close(fd);
-    fileops_lock_release_write(name_key);
+    uint64_t sync_us = elapsed_microseconds(&write_end, &sync_end);
 
-    if (write_rc < 0) {
-        send_error(client_fd, ERR_INTERNAL, "failed to write file");
-        return;
-    }
+    /* Send metrics breakdown payload */
+    unsigned char metrics_buf[24];
+    write_u64(metrics_buf + 0, network_us);
+    write_u64(metrics_buf + 8, write_us);
+    write_u64(metrics_buf + 16, sync_us);
 
-    send_ok(client_fd);
+    uint64_t total_us = network_us + write_us + sync_us;
+    send_message(client_fd, OP_RESP_OK, metrics_buf, sizeof(metrics_buf), total_us);
 }
 
 static void handle_download(int client_fd, const unsigned char *payload, uint32_t payload_len)
@@ -179,43 +197,32 @@ static void handle_download(int client_fd, const unsigned char *payload, uint32_
         return;
     }
 
-    char name_key[NERVFS_MAX_NAME_LEN + 1];
-    memcpy(name_key, payload + 2, name_len);
-    name_key[name_len] = '\0';
-
-    /* downloads are shared readers, they only block while a writer currently holds the file */
-    fileops_lock_acquire_read(name_key);
-
     void *mapped = NULL;
     uint64_t size = 0;
     int file_fd = -1;
 
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
     int rc = fileops_open_for_mmap_read(path, &mapped, &size, &file_fd);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
     if (rc == -1) {
-        fileops_lock_release_read(name_key);
         send_error(client_fd, ERR_NOT_FOUND, "file not found");
         return;
     }
     if (rc == -2) {
-        fileops_lock_release_read(name_key);
         send_error(client_fd, ERR_INTERNAL, "failed to map file");
         return;
     }
 
-    if (fileops_lock_fd(file_fd, NERVFS_LOCK_READ) < 0) {
-        fileops_close_mmap(mapped, size, file_fd);
-        fileops_lock_release_read(name_key);
-        send_error(client_fd, ERR_INTERNAL, "failed to lock file");
-        return;
-    }
+    uint64_t elapsed_us = elapsed_microseconds(&start, &end);
 
-    /* mapping and locking both succeeded before any bytes went out, header below is safe to promise */
     nervfs_header_t header;
     header.magic = NERVFS_MAGIC;
     header.version = NERVFS_VERSION;
     header.opcode = OP_RESP_FILE_DATA;
     header.payload_len = (uint32_t)(8 + size);
-    header.reserved = 0;
+    header.reserved = elapsed_us;
 
     unsigned char header_buf[NERVFS_HEADER_SIZE];
     serialize_header(&header, header_buf);
@@ -226,13 +233,10 @@ static void handle_download(int client_fd, const unsigned char *payload, uint32_
     send_full(client_fd, size_buf, 8);
 
     if (size > 0) {
-        /* zero copy path, streams straight from the mapped page cache region to the socket */
         send_full(client_fd, mapped, size);
     }
 
-    fileops_unlock_fd(file_fd);
     fileops_close_mmap(mapped, size, file_fd);
-    fileops_lock_release_read(name_key);
 }
 
 static void handle_list(int client_fd)
@@ -240,10 +244,17 @@ static void handle_list(int client_fd)
     nervfs_dirent_t *entries = NULL;
     uint32_t count = 0;
 
-    if (fileops_list_dir(&entries, &count) < 0) {
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    int list_rc = fileops_list_dir(&entries, &count);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    if (list_rc < 0) {
         send_error(client_fd, ERR_INTERNAL, "failed to list storage directory");
         return;
     }
+
+    uint64_t elapsed_us = elapsed_microseconds(&start, &end);
 
     uint32_t payload_len = 4;
     for (uint32_t i = 0; i < count; i++) {
@@ -273,7 +284,7 @@ static void handle_list(int client_fd)
         off += 4;
     }
 
-    send_message(client_fd, OP_RESP_LIST_DATA, buf, payload_len);
+    send_message(client_fd, OP_RESP_LIST_DATA, buf, payload_len, elapsed_us);
 
     free(buf);
     free(entries);
@@ -298,23 +309,17 @@ static void handle_delete(int client_fd, const unsigned char *payload, uint32_t 
         return;
     }
 
-    char name_key[NERVFS_MAX_NAME_LEN + 1];
-    memcpy(name_key, payload + 2, name_len);
-    name_key[name_len] = '\0';
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    int delete_rc = fileops_delete_file(path);
+    clock_gettime(CLOCK_MONOTONIC, &end);
 
-    /* delete is a destructive mutation, treated the same as a writer for locking purposes */
-    fileops_lock_acquire_write(name_key);
-
-    int rc = fileops_delete_file(path);
-
-    fileops_lock_release_write(name_key);
-
-    if (rc < 0) {
+    if (delete_rc < 0) {
         send_error(client_fd, ERR_NOT_FOUND, "file not found");
         return;
     }
 
-    send_ok(client_fd);
+    send_ok(client_fd, elapsed_microseconds(&start, &end));
 }
 
 static void handle_chmod(int client_fd, const unsigned char *payload, uint32_t payload_len)
@@ -338,19 +343,24 @@ static void handle_chmod(int client_fd, const unsigned char *payload, uint32_t p
 
     uint32_t mode = read_u32(payload + 2 + name_len);
 
-    if (fileops_chmod_file(path, mode) < 0) {
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    int chmod_rc = fileops_chmod_file(path, mode);
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    if (chmod_rc < 0) {
         send_error(client_fd, ERR_NOT_FOUND, "file not found");
         return;
     }
 
-    send_ok(client_fd);
+    send_ok(client_fd, elapsed_microseconds(&start, &end));
 }
 
-void dispatch_request(int client_fd, const nervfs_header_t *header, const unsigned char *payload)
+void dispatch_request_timed(int client_fd, const nervfs_header_t *header, const unsigned char *payload, struct timespec net_start)
 {
     switch (header->opcode) {
         case OP_REQ_UPLOAD:
-            handle_upload(client_fd, payload, header->payload_len);
+            handle_upload_timed(client_fd, payload, header->payload_len, net_start);
             break;
         case OP_REQ_DOWNLOAD:
             handle_download(client_fd, payload, header->payload_len);

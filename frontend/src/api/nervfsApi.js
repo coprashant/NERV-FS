@@ -24,20 +24,29 @@ export const logout = () => {
   localStorage.removeItem(TOKEN_KEY);
 };
 
-export const listFiles = () =>
-  api.get('/files').then((response) => response.data);
+const withTiming = async (requestPromise) => {
+  const start = performance.now();
+  const response = await requestPromise;
+  const clientMs = performance.now() - start;
+  const serverMs = typeof response.data?.serverMs === 'number' ? response.data.serverMs : null;
+  return { data: response.data, serverMs, clientMs };
+};
+
+export const listFiles = () => withTiming(api.get('/files'));
 
 export const uploadFile = (file, onProgress) => {
   const form = new FormData();
   form.append('file', file);
 
-  return api.post('/files', form, {
-    onUploadProgress: (event) => {
-      if (onProgress && event.total) {
-        onProgress(Math.round((event.loaded * 100) / event.total));
-      }
-    },
-  });
+  return withTiming(
+    api.post('/files', form, {
+      onUploadProgress: (event) => {
+        if (onProgress && event.total) {
+          onProgress(Math.round((event.loaded * 100) / event.total));
+        }
+      },
+    })
+  );
 };
 
 export const downloadFile = (name) => {
@@ -46,8 +55,7 @@ export const downloadFile = (name) => {
   window.location.href = `${BASE}/files/${encodeURIComponent(name)}${query}`;
 };
 
-export const deleteFile = (name) =>
-  api.delete(`/files/${encodeURIComponent(name)}`);
+export const deleteFile = (name) => withTiming(api.delete(`/files/${encodeURIComponent(name)}`));
 
 export const setPermissions = (name, mode) =>
-  api.patch(`/files/${encodeURIComponent(name)}/permissions`, { mode });
+  withTiming(api.patch(`/files/${encodeURIComponent(name)}/permissions`, { mode }));

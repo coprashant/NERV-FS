@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { getToken, listFiles, login, logout } from './api/nervfsApi';
 import FileList from './components/FileList';
 import UploadForm from './components/UploadForm';
+import Toast from './components/Toast';
 
 export default function App() {
   const [authenticated, setAuthenticated] = useState(Boolean(getToken()));
@@ -11,6 +12,11 @@ export default function App() {
   const [error, setError] = useState('');
   const [loginError, setLoginError] = useState('');
   const [loggingIn, setLoggingIn] = useState(false);
+  const [toast, setToast] = useState(null);
+
+  const showToast = useCallback((type, title, message, serverMs = null, clientMs = null) => {
+    setToast({ type, title, message, serverMs, clientMs });
+  }, []);
 
   const refreshFiles = useCallback(async () => {
     if (!authenticated) {
@@ -20,8 +26,12 @@ export default function App() {
 
     try {
       setError('');
-      const data = await listFiles();
-      setFiles(data.files || []);
+      const response = await listFiles();
+      setFiles(response.data?.files || []);
+      
+      if (response.serverMs !== null || response.clientMs !== null) {
+        showToast('info', 'Files Refreshed', 'File list updated successfully.', response.serverMs, response.clientMs);
+      }
     } catch (err) {
       if (err.response?.status === 401) {
         logout();
@@ -31,11 +41,13 @@ export default function App() {
         return;
       }
 
-      setError(err.response?.data?.error || err.message || 'Could not load files.');
+      const errMsg = err.response?.data?.error || err.message || 'Could not load files.';
+      setError(errMsg);
+      showToast('error', 'Error', errMsg);
     } finally {
       setLoading(false);
     }
-  }, [authenticated]);
+  }, [authenticated, showToast]);
 
   useEffect(() => {
     refreshFiles();
@@ -52,7 +64,9 @@ export default function App() {
       setAuthenticated(true);
       setLoading(true);
     } catch (err) {
-      setLoginError(err.response?.data?.error || err.message || 'Login failed.');
+      const errMsg = err.response?.data?.error || err.message || 'Login failed.';
+      setLoginError(errMsg);
+      showToast('error', 'Login Failed', errMsg);
     } finally {
       setLoggingIn(false);
     }
@@ -63,6 +77,7 @@ export default function App() {
     setAuthenticated(false);
     setFiles([]);
     setError('');
+    setToast(null);
   }
 
   if (!authenticated) {
@@ -86,6 +101,7 @@ export default function App() {
             {loggingIn ? 'Logging in...' : 'Log in'}
           </button>
         </form>
+        <Toast toast={toast} onClose={() => setToast(null)} />
       </main>
     );
   }
@@ -107,9 +123,15 @@ export default function App() {
         </div>
       </header>
 
-      <UploadForm onUploaded={refreshFiles} />
+      <UploadForm onUploaded={refreshFiles} onNotify={showToast} />
       {error && <p className="error">{error}</p>}
-      {loading ? <p className="muted">Loading files...</p> : <FileList files={files} onChanged={refreshFiles} />}
+      {loading ? (
+        <p className="muted">Loading files...</p>
+      ) : (
+        <FileList files={files} onChanged={refreshFiles} onNotify={showToast} />
+      )}
+      
+      <Toast toast={toast} onClose={() => setToast(null)} />
     </main>
   );
 }
