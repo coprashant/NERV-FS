@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const BASE = import.meta.env.VITE_NERVFS_BRIDGE_URL || '/api';
+const BASE = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_NERVFS_BRIDGE_URL || '/api';
 const TOKEN_KEY = 'nervfsAdminToken';
 
 const api = axios.create({ baseURL: BASE });
@@ -10,6 +10,9 @@ api.interceptors.request.use((config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
+  
+  config.headers['ngrok-skip-browser-warning'] = 'true';
+  
   return config;
 });
 
@@ -51,8 +54,12 @@ export const uploadFile = (file, onProgress) => {
 
 export const downloadFile = (name) => {
   const token = getToken();
-  const query = token ? `?token=${encodeURIComponent(token)}` : '';
-  window.location.href = `${BASE}/files/${encodeURIComponent(name)}${query}`;
+  const params = new URLSearchParams();
+  
+  if (token) params.append('token', token);
+  params.append('ngrok-skip-browser-warning', 'true');
+
+  window.location.href = `${BASE}/files/${encodeURIComponent(name)}?${params.toString()}`;
 };
 
 export const deleteFile = (name) => withTiming(api.delete(`/files/${encodeURIComponent(name)}`));

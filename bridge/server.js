@@ -1,9 +1,11 @@
 'use strict';
 
+require('dotenv').config(); 
 const crypto = require('crypto');
 const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 const {
   listFiles,
   uploadFile,
@@ -15,15 +17,49 @@ const {
 const app = express();
 const upload = multer();
 
-app.use(cors());
-app.use(express.json());
-
+// Mandatory Security Environment Checks
 const BRIDGE_PORT = Number(process.env.BRIDGE_PORT || 4000);
 const NERVFS_HOST = process.env.NERVFS_HOST || '127.0.0.1';
 const NERVFS_PORT = Number(process.env.NERVFS_PORT || 9000);
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
-const AUTH_SECRET = process.env.AUTH_SECRET || ADMIN_PASSWORD;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+const AUTH_SECRET = process.env.AUTH_SECRET;
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
 const TOKEN_TTL_MS = Number(process.env.TOKEN_TTL_MS || 12 * 60 * 60 * 1000);
+
+// Refuse to boot if critical secrets are not set
+if (!ADMIN_PASSWORD || !AUTH_SECRET) {
+  console.error('[CRITICAL] ADMIN_PASSWORD and AUTH_SECRET environment variables must be set!');
+  process.exit(1);
+}
+
+// Middleware & CORS Configuration
+app.use(cors({
+  origin: ALLOWED_ORIGIN, 
+  methods: ['GET', 'POST', 'DELETE', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'ngrok-skip-browser-warning'],
+}));
+
+app.use(express.json());
+
+// Rate Limiting 
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 15, 
+  message: { error: 'Too many failed login attempts. Try again in 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Crypto & Token Utilities
+function safeCompare(a, b) {
+  const bufA = Buffer.from(String(a));
+  const bufB = Buffer.from(String(b));
+  if (bufA.length !== bufB.length) {
+    crypto.timingSafeEqual(bufA, bufA); 
+    return false;
+  }
+  return crypto.timingSafeEqual(bufA, bufB);
+}
 
 function signPayload(payload) {
   return crypto.createHmac('sha256', AUTH_SECRET).update(payload).digest('base64url');
@@ -43,10 +79,8 @@ function verifyToken(token) {
 
   const [payload, signature] = token.split('.');
   const expected = signPayload(payload);
-  if (
-    signature.length !== expected.length ||
-    !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))
-  ) {
+
+  if (!safeCompare(signature, expected)) {
     return false;
   }
 
@@ -80,6 +114,7 @@ function sendError(res, err) {
   res.status(statusForError(err)).json({ error: err.message });
 }
 
+// API Routes
 app.get('/health', async (req, res) => {
   try {
     await listFiles(NERVFS_HOST, NERVFS_PORT);
@@ -89,10 +124,11 @@ app.get('/health', async (req, res) => {
   }
 });
 
-app.post('/auth/login', (req, res) => {
+// Applied rate limiting & constant-time password check
+app.post('/auth/login', loginLimiter, (req, res) => {
   const password = String(req.body.password || '');
 
-  if (password !== ADMIN_PASSWORD) {
+  if (!safeCompare(password, ADMIN_PASSWORD)) {
     return res.status(401).json({ error: 'Invalid admin password' });
   }
 
@@ -130,8 +166,12 @@ app.post('/files', upload.single('file'), async (req, res) => {
 
 app.get('/files/:name', async (req, res) => {
   try {
-    const { data, serverMs } = await downloadFile(NERVFS_HOST, NERVFS_PORT, req.params.name);
-    res.setHeader('Content-Disposition', `attachment; filename="${req.params.name}"`);
+    const filename = req.params.name;
+    const { data, serverMs } = await downloadFile(NERVFS_HOST, NERVFS_PORT, filename);
+
+    // Sanitized header output against CRLF / Header Injection
+    const safeFilename = encodeURIComponent(filename).replace(/['()]/g, escape).replace(/\*/g, '%2A');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"; filename*=UTF-8''${safeFilename}`);
     res.setHeader('Content-Type', 'application/octet-stream');
     res.setHeader('X-Server-Time-Ms', String(serverMs));
     res.send(data);
@@ -164,5 +204,5 @@ app.patch('/files/:name/permissions', async (req, res) => {
 });
 
 app.listen(BRIDGE_PORT, () => {
-  console.log(`NERV-FS bridge listening on :${BRIDGE_PORT}, proxying ${NERVFS_HOST}:${NERVFS_PORT}`);
+  console.log(`NERV-FS secure bridge listening on :${BRIDGE_PORT}, proxying ${NERVFS_HOST}:${NERVFS_PORT}`);
 });
