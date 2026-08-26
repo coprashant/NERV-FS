@@ -19,7 +19,8 @@ static pthread_mutex_t queue_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t queue_cond = PTHREAD_COND_INITIALIZER;
 static volatile int pool_running = 1;
 
-/* runs the real file operation for a job */
+/* reads the payload for a job and runs the matching file operation */
+/* the network read happens here, on the worker thread, not on the accept loop */
 static void process_job(nervfs_job_t *job)
 {
     char msg[128];
@@ -27,12 +28,31 @@ static void process_job(nervfs_job_t *job)
              opcode_name(job->header.opcode), job->client_fd);
     log_info(msg);
 
-    // Record start time before dispatching the request
+    unsigned char *payload = NULL;
+
     struct timespec net_start;
     clock_gettime(CLOCK_MONOTONIC, &net_start);
 
-    dispatch_request_timed(job->client_fd, &job->header, job->payload, net_start);
+    if (job->header.payload_len > 0) {
+        payload = malloc(job->header.payload_len);
+        if (payload == NULL) {
+            log_error("payload allocation failed");
+            close(job->client_fd);
+            return;
+        }
 
+        ssize_t got = recv_full(job->client_fd, payload, job->header.payload_len);
+        if (got < 0 || (uint32_t)got < job->header.payload_len) {
+            log_info("client disconnected before sending the full payload");
+            free(payload);
+            close(job->client_fd);
+            return;
+        }
+    }
+
+    dispatch_request_timed(job->client_fd, &job->header, payload, net_start);
+
+    free(payload);
     close(job->client_fd);
 }
 
@@ -61,7 +81,6 @@ static void *worker_main(void *arg)
         pthread_mutex_unlock(&queue_lock);
 
         process_job(job);
-        free(job->payload);
         free(job);
     }
 
@@ -85,19 +104,17 @@ void threadpool_init(int num_workers)
     log_info(msg);
 }
 
-void threadpool_submit(int client_fd, const nervfs_header_t *header, unsigned char *payload)
+void threadpool_submit(int client_fd, const nervfs_header_t *header)
 {
     nervfs_job_t *job = malloc(sizeof(nervfs_job_t));
     if (job == NULL) {
         log_error("job allocation failed");
-        free(payload);
         close(client_fd);
         return;
     }
 
     job->client_fd = client_fd;
     job->header = *header;
-    job->payload = payload;
     job->next = NULL;
 
     pthread_mutex_lock(&queue_lock);

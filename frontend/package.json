@@ -1,7 +1,7 @@
 {
   "name": "nervfs-frontend",
   "version": "0.1.0",
-  "description": "React web ui for NERV FS phase 11",
+  "description": "React web ui for NERV FS",
   "scripts": {
     "dev": "vite",
     "build": "vite build"

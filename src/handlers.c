@@ -12,6 +12,14 @@
 #include "protocol.h"
 #include "fileops.h"
 
+/* copies a client supplied name into a null terminated stack buffer */
+/* caller must only call this after safe_resolve_path already accepted the name */
+static void extract_name(const unsigned char *name, uint16_t name_len, char *out)
+{
+    memcpy(out, name, name_len);
+    out[name_len] = '\0';
+}
+
 static uint16_t read_u16(const unsigned char *p)
 {
     uint16_t v;
@@ -144,11 +152,26 @@ static void handle_upload_timed(int client_fd, const unsigned char *payload, uin
         return;
     }
 
+    char name_buf[NERVFS_MAX_NAME_LEN + 1];
+    extract_name(name, name_len, name_buf);
+
+    /* in process writer lock, blocks other uploads/deletes/chmods and all downloads of this name */
+    fileops_lock_acquire_write(name_buf);
+
     /* Measure RAM page cache write time */
     clock_gettime(CLOCK_MONOTONIC, &write_start);
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
+        fileops_lock_release_write(name_buf);
         send_error(client_fd, ERR_INTERNAL, "failed to open file");
+        return;
+    }
+
+    /* cross process writer lock on the fd itself, safe even if another process opens the file */
+    if (fileops_lock_fd(fd, NERVFS_LOCK_WRITE) < 0) {
+        close(fd);
+        fileops_lock_release_write(name_buf);
+        send_error(client_fd, ERR_INTERNAL, "failed to lock file");
         return;
     }
 
@@ -157,7 +180,9 @@ static void handle_upload_timed(int client_fd, const unsigned char *payload, uin
     uint64_t write_us = elapsed_microseconds(&write_start, &write_end);
 
     if (bytes_written < 0 || (size_t)bytes_written != file_size) {
+        fileops_unlock_fd(fd);
         close(fd);
+        fileops_lock_release_write(name_buf);
         send_error(client_fd, ERR_INTERNAL, "failed to write file body");
         return;
     }
@@ -165,7 +190,9 @@ static void handle_upload_timed(int client_fd, const unsigned char *payload, uin
     /* Measure physical disk sync time */
     fsync(fd);
     clock_gettime(CLOCK_MONOTONIC, &sync_end);
+    fileops_unlock_fd(fd);
     close(fd);
+    fileops_lock_release_write(name_buf);
     uint64_t sync_us = elapsed_microseconds(&write_end, &sync_end);
 
     /* Send metrics breakdown payload */
@@ -197,6 +224,12 @@ static void handle_download(int client_fd, const unsigned char *payload, uint32_
         return;
     }
 
+    char name_buf[NERVFS_MAX_NAME_LEN + 1];
+    extract_name(payload + 2, name_len, name_buf);
+
+    /* in process reader lock, waits for any in flight writer of this name first */
+    fileops_lock_acquire_read(name_buf);
+
     void *mapped = NULL;
     uint64_t size = 0;
     int file_fd = -1;
@@ -207,13 +240,18 @@ static void handle_download(int client_fd, const unsigned char *payload, uint32_
     clock_gettime(CLOCK_MONOTONIC, &end);
 
     if (rc == -1) {
+        fileops_lock_release_read(name_buf);
         send_error(client_fd, ERR_NOT_FOUND, "file not found");
         return;
     }
     if (rc == -2) {
+        fileops_lock_release_read(name_buf);
         send_error(client_fd, ERR_INTERNAL, "failed to map file");
         return;
     }
+
+    /* cross process reader lock on the fd itself */
+    fileops_lock_fd(file_fd, NERVFS_LOCK_READ);
 
     uint64_t elapsed_us = elapsed_microseconds(&start, &end);
 
@@ -236,7 +274,9 @@ static void handle_download(int client_fd, const unsigned char *payload, uint32_
         send_full(client_fd, mapped, size);
     }
 
+    fileops_unlock_fd(file_fd);
     fileops_close_mmap(mapped, size, file_fd);
+    fileops_lock_release_read(name_buf);
 }
 
 static void handle_list(int client_fd)
@@ -309,10 +349,17 @@ static void handle_delete(int client_fd, const unsigned char *payload, uint32_t 
         return;
     }
 
+    char name_buf[NERVFS_MAX_NAME_LEN + 1];
+    extract_name(payload + 2, name_len, name_buf);
+
+    fileops_lock_acquire_write(name_buf);
+
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC, &start);
     int delete_rc = fileops_delete_file(path);
     clock_gettime(CLOCK_MONOTONIC, &end);
+
+    fileops_lock_release_write(name_buf);
 
     if (delete_rc < 0) {
         send_error(client_fd, ERR_NOT_FOUND, "file not found");
@@ -343,10 +390,17 @@ static void handle_chmod(int client_fd, const unsigned char *payload, uint32_t p
 
     uint32_t mode = read_u32(payload + 2 + name_len);
 
+    char name_buf[NERVFS_MAX_NAME_LEN + 1];
+    extract_name(payload + 2, name_len, name_buf);
+
+    fileops_lock_acquire_write(name_buf);
+
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC, &start);
     int chmod_rc = fileops_chmod_file(path, mode);
     clock_gettime(CLOCK_MONOTONIC, &end);
+
+    fileops_lock_release_write(name_buf);
 
     if (chmod_rc < 0) {
         send_error(client_fd, ERR_NOT_FOUND, "file not found");

@@ -52,7 +52,7 @@ int net_create_listener(int port)
 
 void net_run_echo_loop(int listen_fd)
 {
-    log_info("phase 1 echo loop waiting for a client");
+    log_info("echo loop waiting for a client");
 
     while (1) {
         struct sockaddr_in client_addr;
@@ -111,30 +111,9 @@ static int handle_client_readable(int client_fd)
         return 1;
     }
 
-    unsigned char *payload = NULL;
-    if (header.payload_len > 0) {
-        payload = malloc(header.payload_len);
-        if (payload == NULL) {
-            log_error("payload allocation failed");
-            return 1;
-        }
-
-        ssize_t pgot = recv_full(client_fd, payload, header.payload_len);
-        if (pgot < 0) {
-            log_error("failed to read payload");
-            free(payload);
-            return 1;
-        }
-
-        if ((uint32_t)pgot < header.payload_len) {
-            log_info("client disconnected before sending the full payload");
-            free(payload);
-            return 1;
-        }
-    }
-
-    /* request is fully read, hand it to a worker thread which now owns the fd */
-    threadpool_submit(client_fd, &header, payload);
+    /* payload is read by the worker thread, not here, so a slow or large */
+    /* upload cannot stall the accept loop or other connected clients */
+    threadpool_submit(client_fd, &header);
     return 2;
 }
 
@@ -145,7 +124,7 @@ void net_run_select_loop(int listen_fd)
         client_fds[i] = -1;
     }
 
-    log_info("phase 2 select loop watching listener and clients");
+    log_info("select loop watching listener and clients");
 
     while (nervfs_running) {
         fd_set read_set;
