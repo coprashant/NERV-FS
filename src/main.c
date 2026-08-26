@@ -67,7 +67,7 @@ int main(int argc, char *argv[])
 
     threadpool_init(NERVFS_THREAD_POOL_SIZE);
 
-    /* phase 2 select loop, returns once nervfs_running is cleared by the SIGINT handler */
+    /* select loop, returns once nervfs_running is cleared by the SIGINT handler */
     net_run_select_loop(listen_fd);
 
     log_info("select loop stopped, shutting down thread pool");

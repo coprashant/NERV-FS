@@ -1,7 +1,7 @@
 {
   "name": "nervfs-bridge",
   "version": "0.1.0",
-  "description": "REST to binary protocol gateway for NERV FS phase 10",
+  "description": "REST to binary protocol gateway for NERV FS",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
